@@ -544,7 +544,7 @@ impl Workspace {
         let mut branches = vec![(
             main_branch
                 .as_ref()
-                .map_or_else(|| "".to_string(), |b| b.name().unwrap()),
+                .map_or_else(|| "".to_string(), |b| b.name().unwrap_or_default()),
             main_branch.map(|b| b.last_revision()),
             Some(self.local_tree().last_revision().unwrap()),
         )];
@@ -958,6 +958,54 @@ mod tests {
             vec![(
                 "".to_string(),
                 None,
+                Some(ws.local_tree().last_revision().unwrap())
+            )],
+            ws.changed_branches()
+        );
+        std::mem::drop(ws);
+        std::mem::drop(td);
+    }
+
+    #[test]
+    #[serial]
+    fn test_main_branch_without_name() {
+        let _test_env = TestEnv::new();
+        let td = tempfile::tempdir().unwrap();
+
+        let origin_dir = td.path().join("origin");
+        let origin =
+            breezyshim::controldir::create_standalone_workingtree(&origin_dir, "git").unwrap();
+        let revid1 = origin
+            .build_commit()
+            .message("first commit")
+            .allow_pointless(true)
+            .commit()
+            .unwrap();
+        origin
+            .branch()
+            .tags()
+            .unwrap()
+            .set_tag("v1.0", &revid1)
+            .unwrap();
+        // Breezy only names branches for refs under refs/heads/.
+        std::fs::write(origin_dir.join(".git/HEAD"), "ref: refs/tags/v1.0\n").unwrap();
+        let main_branch = breezyshim::branch::open_as_generic(origin_dir.as_path()).unwrap();
+        assert_eq!(main_branch.name(), None);
+
+        let ws_dir = td.path().join("ws");
+        std::fs::create_dir(&ws_dir).unwrap();
+        let mut ws = Workspace::builder().dir(ws_dir).build().unwrap();
+        ws.local_tree()
+            .build_commit()
+            .message("A change")
+            .commit()
+            .unwrap();
+        ws.set_main_branch(main_branch).unwrap();
+
+        assert_eq!(
+            vec![(
+                "".to_string(),
+                Some(revid1),
                 Some(ws.local_tree().last_revision().unwrap())
             )],
             ws.changed_branches()
