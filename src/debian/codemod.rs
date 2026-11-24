@@ -380,6 +380,9 @@ pub fn script_runner(
 
     if commit_pending {
         let description = result.description.as_deref().unwrap();
+        local_tree
+            .smart_add(&[local_tree.abspath(subpath).unwrap().as_path()])
+            .unwrap();
         if update_changelog && !description.trim().is_empty() && local_tree.has_changes().unwrap() {
             let maintainer = match extra_env.map(|e| get_maintainer_from_env(|k| e.get(k).cloned()))
             {
@@ -396,9 +399,6 @@ pub fn script_runner(
                 None,
             );
         }
-        local_tree
-            .smart_add(&[local_tree.abspath(subpath).unwrap().as_path()])
-            .unwrap();
         if description.trim().is_empty() && local_tree.has_changes().unwrap() {
             return Err(Error::Other(
                 "Script left changes but gave no description to commit them with".to_string(),
@@ -485,6 +485,61 @@ mod tests {
         assert!(
             matches!(&err, super::Error::Other(msg) if msg.starts_with("Changelog parse error:")),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_changelog_entry_for_new_files() {
+        let _test_env = TestEnv::new();
+        let td = tempfile::tempdir().unwrap();
+        let d = td.path().join("t");
+        let tree = create_standalone_workingtree(&d, "git").unwrap();
+        std::fs::create_dir(d.join("debian")).unwrap();
+        std::fs::write(
+            d.join("debian/changelog"),
+            "foo (1.0-1) unstable; urgency=low\n\n  * Initial release.\n\n -- Joe Example <joe@example.com>  Mon, 01 Jan 1996 00:00:00 +0000\n",
+        )
+        .unwrap();
+        tree.add(&[
+            std::path::Path::new("debian"),
+            std::path::Path::new("debian/changelog"),
+        ])
+        .unwrap();
+        tree.build_commit().message("initial").commit().unwrap();
+
+        let script_path = td.path().join("script.sh");
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nmkdir debian/upstream\necho 'Name: foo' > debian/upstream/metadata\necho Add upstream metadata\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+
+        super::script_runner(
+            &tree,
+            &[script_path.to_str().unwrap()],
+            std::path::Path::new(""),
+            crate::CommitPending::Auto,
+            None,
+            Some("Joe Example <joe@example.com>"),
+            Some(std::collections::HashMap::from([
+                ("DEBFULLNAME".to_string(), "Joe Example".to_string()),
+                ("DEBEMAIL".to_string(), "joe@example.com".to_string()),
+            ])),
+            std::process::Stdio::null(),
+            Some(true),
+        )
+        .unwrap();
+
+        assert!(!tree.has_changes().unwrap());
+        let changelog = std::fs::read_to_string(d.join("debian/changelog")).unwrap();
+        assert!(
+            changelog.contains("  * Add upstream metadata"),
+            "{}",
+            changelog
         );
     }
 
