@@ -364,7 +364,7 @@ pub fn script_runner(
         }
         let mut builder = local_tree
             .build_commit()
-            .message(description)
+            .message(result.commit_message.as_deref().unwrap_or(description))
             .allow_pointless(false);
         if let Some(committer) = committer {
             builder = builder.committer(committer);
@@ -597,6 +597,60 @@ echo '{"description": "Did a thing", "code": "success"}' > $SVP_RESULT
         assert_eq!(result.old_revision, old_revid);
         assert_eq!(result.new_revision, tree.last_revision().unwrap());
         assert_eq!(result.description.as_deref().unwrap(), "Did a thing");
+
+        std::mem::drop(td);
+    }
+
+    #[test]
+    #[serial]
+    fn test_commit_message_from_result() {
+        let _test_env = TestEnv::new();
+        let td = tempfile::tempdir().unwrap();
+        let d = td.path().join("t");
+        let tree = create_standalone_workingtree(&d, "bzr").unwrap();
+        let script_path = td.path().join("script.sh");
+        std::fs::write(
+            &script_path,
+            r#"#!/bin/sh
+echo changed > bar
+echo Did a thing
+echo and some more
+echo '{"code": "success", "commit-message": "Fix a typo"}' > $SVP_RESULT
+"#,
+        )
+        .unwrap();
+
+        make_executable(&script_path);
+
+        std::fs::write(d.join("bar"), "bar").unwrap();
+
+        tree.add(&[std::path::Path::new("bar")]).unwrap();
+        tree.build_commit().message("initial").commit().unwrap();
+        let script_path_str = script_path.to_str().unwrap();
+        let result = super::script_runner(
+            &tree,
+            &[script_path_str],
+            std::path::Path::new(""),
+            crate::CommitPending::Auto,
+            None,
+            Some("Joe Example <joe@example.com>"),
+            None,
+            std::process::Stdio::null(),
+        )
+        .unwrap();
+
+        use breezyshim::branch::Branch;
+        use breezyshim::repository::Repository;
+        let revision = tree
+            .branch()
+            .repository()
+            .get_revision(&result.new_revision)
+            .unwrap();
+        assert_eq!(revision.message, "Fix a typo");
+        assert_eq!(
+            result.description.as_deref(),
+            Some("Did a thing\nand some more\n")
+        );
 
         std::mem::drop(td);
     }
